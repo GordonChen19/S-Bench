@@ -1180,6 +1180,12 @@
         cursor: pointer;
       }
 
+      .shared-entry-actions button.danger {
+        border-color: rgba(255, 150, 150, 0.5);
+        background: rgba(110, 22, 22, 0.34);
+        color: #ffe1e1;
+      }
+
       .shared-entry-actions button:hover {
         filter: brightness(1.08);
       }
@@ -4034,6 +4040,7 @@
           updateStatus("Logged out annotator account.");
           sharedRegisterButton.disabled = false;
           sharedLoginButton.disabled = false;
+          loadSharedEntries();
         }
       }
 
@@ -4175,6 +4182,10 @@
           const reviewers = document.createElement("div");
           reviewers.className = "shared-entry-reviewers";
           const annotations = Array.isArray(videoItem.annotations) ? videoItem.annotations : [];
+          const currentAnnotator = annotatorKey(sharedAuthenticatedAnnotator);
+          const ownedEntry = currentAnnotator
+            ? (annotations.find((entry) => annotatorKey(entry && entry.annotator) === currentAnnotator) || null)
+            : null;
           if (!annotations.length) {
             const emptyReviewer = document.createElement("div");
             emptyReviewer.className = "shared-entry-reviewer-empty";
@@ -4210,6 +4221,17 @@
             });
             actions.appendChild(loadLatestButton);
           }
+          if (ownedEntry && Number.isInteger(ownedEntry.id)) {
+            const deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.className = "danger";
+            deleteButton.textContent = "Delete My Annotations";
+            deleteButton.title = "Remove your annotations for this video";
+            deleteButton.addEventListener("click", () => {
+              deleteSharedEntry(ownedEntry);
+            });
+            actions.appendChild(deleteButton);
+          }
 
           main.append(title, meta, reviewers, actions);
           card.appendChild(main);
@@ -4235,6 +4257,76 @@
           updateSharedStatus(
             "Could not reach shared library (" + message + "). Start the shared bridge with: python preprocessing/yt_mp4_bridge.py --host 0.0.0.0"
           );
+        }
+      }
+
+      async function deleteSharedEntry(entry) {
+        if (!requireSharedLogin("deleting shared annotations")) {
+          return;
+        }
+        if (!entry || !Number.isInteger(entry.id)) {
+          showErrorPopup("Could not delete this entry because the entry id is missing.");
+          return;
+        }
+
+        const entryAnnotator = String(entry.annotator || "this annotator");
+        const confirmed = window.confirm(
+          "Delete all your shared annotations for this video as " + entryAnnotator + "?"
+        );
+        if (!confirmed) {
+          return;
+        }
+
+        updateSharedStatus("Deleting shared annotations...");
+        try {
+          const response = await fetch(resolveSharedApiUrl(SHARED_LIBRARY_ENTRIES_PATH + "/" + String(entry.id)), {
+            method: "DELETE",
+            headers: buildSharedAuthHeaders(),
+          });
+
+          let payload = null;
+          try {
+            payload = await response.json();
+          } catch (error) {
+            payload = null;
+          }
+
+          if (!response.ok || !payload || !payload.result) {
+            throw new Error(payload && payload.error ? payload.error : "Delete failed.");
+          }
+
+          const result = payload.result;
+          const remaining = Number.isFinite(Number(result.remainingAnnotations))
+            ? Math.max(0, Number(result.remainingAnnotations))
+            : 0;
+          const videoDeleted = Boolean(result.videoDeleted);
+
+          if (Number.isInteger(currentSharedEntryId) && currentSharedEntryId === entry.id) {
+            currentSharedEntryId = null;
+          }
+          if (
+            videoDeleted
+            && Number.isInteger(currentServerVideoRef)
+            && Number.isInteger(entry.videoRef)
+            && currentServerVideoRef === entry.videoRef
+          ) {
+            currentServerVideoRef = null;
+            currentWorkspaceVideoRef = null;
+          }
+
+          renderJsonPreview();
+          if (videoDeleted) {
+            updateSharedStatus("Deleted your annotations and removed the video because no annotations remain.");
+            updateStatus("Deleted your shared annotations. The video was removed from shared storage.");
+          } else {
+            updateSharedStatus("Deleted your annotations. " + String(remaining) + " annotator layer(s) remain.");
+            updateStatus("Deleted your shared annotations for this video.");
+          }
+          await loadSharedEntries();
+        } catch (error) {
+          const message = error && error.message ? String(error.message) : "Unknown error";
+          updateSharedStatus("Delete failed (" + message + ").");
+          showErrorPopup("Delete failed: " + message);
         }
       }
 
